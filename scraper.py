@@ -146,16 +146,11 @@ class Spend:
     def __init__(self):
         self.calls = {}      # label -> {n, model, input, output, searches}
         self.places = 0
-        self.brave = 0
         self._lock = threading.Lock()
 
     def add_places(self, n=1):
         with self._lock:
             self.places += n
-
-    def add_brave(self, n=1):
-        with self._lock:
-            self.brave += n
 
     def add_call(self, label, model, msg, searches=0):
         try:
@@ -181,17 +176,13 @@ class Spend:
 
     def total(self):
         return (sum(self._cost(e) for e in self.calls.values())
-                + self.places * config.PLACES_COST_PER_REQUEST
-                + self.brave * config.BRAVE_COST_PER_QUERY)
+                + self.places * config.PLACES_COST_PER_REQUEST)
 
     def report(self, leads=0):
         lines = ["", "COST ESTIMATE", "-" * 62]
         places_cost = self.places * config.PLACES_COST_PER_REQUEST
         lines.append(f"  {'Google Places':<26} {self.places:>4} req"
                      f"{'':>18} ${places_cost:6.2f}")
-        if self.brave:
-            lines.append(f"  {'Brave search':<26} {self.brave:>4} q"
-                         f"{'':>20} ${self.brave * config.BRAVE_COST_PER_QUERY:6.2f}")
         for label, e in sorted(self.calls.items(),
                                key=lambda kv: -self._cost(kv[1])):
             lines.append(f"  {label:<26} {e['n']:>4} calls  "
@@ -1211,148 +1202,6 @@ def discover_via_search(client, location, target, known_names=(), limit=20,
     return out[:limit]
 
 
-BRAVE_URL = "https://api.search.brave.com/res/v1/web/search"
-_brave_gate = threading.Lock()
-_brave_last = [0.0]
-
-
-def brave_search(query, count=5, spend=None):
-    """Brave Search. Returns [(title, url, snippet)]; [] when unavailable.
-
-    Throttled to the free tier's 1 query/second — exceeding it returns 429s
-    that would look like "nothing found" rather than "slow down".
-    """
-    if not config.key("BRAVE_API_KEY"):
-        return []
-    with _brave_gate:
-        wait = config.BRAVE_MIN_INTERVAL - (time.monotonic() - _brave_last[0])
-        if wait > 0:
-            time.sleep(wait)
-        _brave_last[0] = time.monotonic()
-    try:
-        r = requests.get(
-            BRAVE_URL,
-            headers={"X-Subscription-Token": config.key("BRAVE_API_KEY"),
-                     "Accept": "application/json"},
-            params={"q": query, "count": count, "country": "us"},
-            timeout=15)
-    except requests.RequestException:
-        return []
-    if spend:
-        spend.add_brave()
-    if not r.ok:
-        return []
-    try:
-        results = r.json().get("web", {}).get("results", []) or []
-    except ValueError:
-        return []
-    return [(w.get("title", ""), w.get("url", ""), w.get("description", ""))
-            for w in results if w.get("url")]
-
-
-def _mentions_org(text, name, org_host=""):
-    """Is this page actually about the organization we're researching?
-
-    A search result can easily be a directory of many businesses or a similarly
-    named company; harvesting an address off one of those is how a lead ends up
-    with somebody else's phone number.
-    """
-    low = (text or "").lower()
-    toks = [t for t in re.split(r"[^a-z0-9]+", (name or "").lower())
-            if len(t) >= 4 and t not in FOCUS_STOPWORDS]
-    if org_host and _registrable(org_host).split(".")[0] in low:
-        return True
-    if not toks:
-        return False
-    hits = sum(1 for t in toks if t in low)
-    return hits >= max(1, min(2, len(toks)))
-
-
-def _phone_near_mention(text, name, window=400):
-    """A phone number that sits near a mention of the organization.
-
-    On a company's own site any published number is theirs, so _best_phone can
-    take the best one anywhere on the page. On somebody else's page — a
-    directory, an arts council, a news article — the number in the header or
-    footer belongs to the page's owner, not to the organization being written
-    about. Requiring the number to appear near the org's name is what keeps a
-    listing site's switchboard out of the lead row.
-    """
-    low = (text or "").lower()
-    toks = [t for t in re.split(r"[^a-z0-9]+", (name or "").lower())
-            if len(t) >= 4 and t not in FOCUS_STOPWORDS]
-    if not toks:
-        return ""
-    spots = [m.start() for t in toks for m in re.finditer(re.escape(t), low)]
-    if not spots:
-        return ""
-    for m in PHONE_TEXT_RE.finditer(text or ""):
-        if any(abs(m.start() - s) <= window for s in spots):
-            return f"({m.group(1)}) {m.group(2)}-{m.group(3)}"
-    return ""
-
-
-def enrich_gaps_free(name, city, website, want, spend=None):
-    """Fill gaps with Brave results read by our own crawler and extractors.
-
-    This replaces the LLM web-search call for the common cases. Everything we
-    need from a third-party page — an address, a phone number, printer models —
-    already has a deterministic extractor, so no model has to read the page.
-    """
-    if not config.key("BRAVE_API_KEY"):
-        return {}
-    org_host = _host(website)
-    queries = []
-    if "email" in want or "phone" in want:
-        queries.append(f"{name} {city} contact email phone".strip())
-    if "printer_models" in want:
-        queries.append(f"{name} 3D printers equipment list".strip())
-
-    found, sources, seen = {}, [], set()
-    for q in queries:
-        for _title, url, _snip in brave_search(q, count=5, spend=spend):
-            if len(seen) >= config.BRAVE_MAX_PAGES:
-                break
-            if _is_generic_host(url) or _norm(url) in seen:
-                continue
-            seen.add(_norm(url))
-            html, text = _fetch(url)
-            if not text or not _mentions_org(text, name, org_host):
-                continue
-            ctext = _contact_text(html)
-            jl_e, jl_p, _ = _extract_jsonld(html)
-
-            if "email" in want and "email" not in found:
-                cand = _best_email(html, ctext, jl_e, host=org_host)
-                # On someone else's page, only an address on the company's own
-                # domain can be trusted to be the company's.
-                if cand and org_host and not _is_foreign_domain(cand, org_host):
-                    found["email"] = cand
-                elif cand and not org_host and _mentions_org(cand, name):
-                    found["email"] = cand
-            if "phone" in want and "phone" not in found:
-                own_page = bool(org_host) and _same_site(url, website)
-                # Trust any number on the company's own site; on a third
-                # party's page only one printed beside the company's name.
-                cand = (_best_phone(html, jl_p, ctext) if own_page
-                        else _phone_near_mention(ctext, name))
-                if cand:
-                    found["phone"] = cand
-            if "printer_models" in want and "printer_models" not in found:
-                models = find_printer_models(text)
-                if models:
-                    found["printer_models"] = "; ".join(models)
-            if url not in sources:
-                sources.append(url)
-            if all(f in found for f in want):
-                break
-        if all(f in found for f in want):
-            break
-    if found:
-        found["source"] = "; ".join(sources[:3])[:200]
-    return found
-
-
 ENRICH_SCHEMA = {
     "type": "object",
     "properties": {
@@ -1891,6 +1740,45 @@ def _same_lead(a, b):
     return _same_prospect(a, b)
 
 
+FOLD_FIELDS = ("email", "phone_web", "phone_maps", "printer_models",
+               "equipment_highlights", "contacts", "pitch", "hours", "address")
+
+
+def _fold_lead(primary, extra):
+    """Merge a duplicate lead into the one being kept.
+
+    Fills the kept row's blanks from the duplicate. Keeping only its name
+    lost real data: when the duplicate was the listing whose site actually
+    published a phone or printer list, those vanished from the spreadsheet.
+    """
+    if extra["name"] != primary["name"] and extra["name"] not in primary.setdefault("related", []):
+        primary["related"].append(extra["name"])
+    if extra.get("address") and extra["address"] != primary.get("address") \
+            and extra["address"] not in primary.setdefault("related_addresses", []):
+        primary["related_addresses"].append(extra["address"])
+    for field in FOLD_FIELDS:
+        if not primary.get(field) and extra.get(field):
+            primary[field] = extra[field]
+
+
+def _interleave_sources(prospects, per_web=3):
+    """Mix web-search finds in among the Places results (3 Places : 1 web).
+
+    The crawl now stops once it has enough keepers, so a queue with all the
+    Places results first would rarely reach the web finds at all — and those
+    are the prospects Maps can't supply.
+    """
+    maps = [p for p in prospects if "Google Places" in (p.get("discovered_via") or "")]
+    web = [p for p in prospects if p not in maps]
+    out = []
+    while maps or web:
+        out += maps[:per_web]
+        maps = maps[per_web:]
+        out += web[:1]
+        web = web[1:]
+    return out
+
+
 def dedupe_leads(leads):
     """Final pass after crawling: drop leads that turned out to be one org.
 
@@ -1908,11 +1796,7 @@ def dedupe_leads(leads):
                                     -(L.get("reviews") or 0)))
         primary = members[0]
         for extra in members[1:]:
-            if extra["name"] != primary["name"] and extra["name"] not in primary.setdefault("related", []):
-                primary["related"].append(extra["name"])
-            if extra.get("address") and extra["address"] != primary.get("address") \
-                    and extra["address"] not in primary.setdefault("related_addresses", []):
-                primary["related_addresses"].append(extra["address"])
+            _fold_lead(primary, extra)
         out.append(primary)
     order = {id(L): i for i, L in enumerate(leads)}
     out.sort(key=lambda L: order.get(id(L), 0))
@@ -1987,12 +1871,19 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
                       "address": p.get("formattedAddress", ""),
                       "phone_maps": p.get("nationalPhoneNumber", "")})
 
-    # max_results is the TOTAL across both sources. Web discovery used to add
-    # up to 8 places on top of a full Places quota, so "5" could return 13.
-    # Reserve about a quarter of the slots for it (it finds what Maps can't);
-    # if Places comes back short, discovery may fill the remainder.
-    reserve = max_results // 4 if use_discovery else 0
-    raw = places_search_all(target, location, max_results=max_results - reserve,
+    # max_results is the number of leads KEPT, not places looked at: places
+    # dropped for showing no 3D printing, or merged as duplicates, no longer
+    # use up a slot. Candidates are pooled up to config.LOOK_FACTOR x the cap;
+    # crawl stops as soon as enough keepers are in. The pool is the cost
+    # ceiling: a location with few real prospects stops at the pool, short.
+    # About a quarter of the pool is reserved for web discovery (it finds what
+    # Maps can't); if Places comes back short, discovery may fill the rest.
+    # Places is asked for the whole pool anyway: the extra results are held
+    # back as spares and fill whatever discovery leaves empty, so a quiet web
+    # search doesn't shrink the pool.
+    pool = max_results * config.LOOK_FACTOR
+    reserve = pool // 4 if use_discovery else 0
+    raw = places_search_all(target, location, max_results=pool,
                             max_queries=preset["queries"], progress=say,
                             spend=spend, skip=_seen_place if exclude else None)
     prospects = []
@@ -2017,9 +1908,10 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
             "reviews": p.get("userRatingCount") or 0,
             "status": p.get("businessStatus", ""),
         })
+    prospects, spare = prospects[:pool - reserve], prospects[pool - reserve:]
 
     # --- Source 2: web search, for places with no Maps listing --------------
-    slots = max_results - len(prospects)
+    slots = pool - len(prospects)
     if use_discovery and slots > 0:
         say(0, 0, "Searching the web for places not on Maps…")
         try:
@@ -2063,7 +1955,7 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
             return False
 
         for e in extra:
-            if len(prospects) >= max_results:
+            if len(prospects) >= pool:
                 break
             host = _host(e["website"])
             if (host and host in known_hosts) or _same_org(e["name"]):
@@ -2084,30 +1976,38 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
                 "hours": "", "rating": None, "reviews": 0, "status": "",
             })
 
-    # --- Resolve any still-missing websites ---------------------------------
-    # Gated by the preset like the other searches: Quick advertises "Google
-    # Maps only", so it must not quietly bill a web search per website-less
-    # place.
-    missing = ([p for p in prospects if not p["website"]]
-               if use_discovery and config.ENABLE_WEBSITE_SEARCH else [])
-    for i, pr in enumerate(missing):
-        say(i + 1, len(missing), f"Finding website: {pr['name']}")
-        pr["website"] = find_website(client, pr["name"], pr["city"],
-                                     pr["address"], spend=spend)
-        if pr["website"]:
-            pr["website_source"] = "Web search"
+    prospects += spare[:max(0, pool - len(prospects))]
 
     # --- Merge duplicates before spending crawl/AI calls --------------------
-    prospects = merge_prospects(prospects)[:max_results]
+    prospects = _interleave_sources(merge_prospects(prospects))[:pool]
 
-    # --- Crawl + extract ----------------------------------------------------
+    # Website lookup is gated by the preset like the other searches: Quick
+    # advertises "Google Maps only", so it must not quietly bill a web search
+    # per website-less place. It runs inside the loop, so a place the run
+    # never reaches (enough keepers already) is never paid for.
+    lookup_sites = use_discovery and config.ENABLE_WEBSITE_SEARCH
+
+    # --- Crawl + extract, until max_results keepers -------------------------
     renderer = Renderer(enabled=use_render)
     leads = []
     processed = []
-    early_dropped = 0
+    early_dropped = late_dropped = checked = 0
     try:
         for i, pr in enumerate(prospects):
-            say(i + 1, len(prospects), pr["name"])
+            if len(leads) >= max_results:
+                break
+            step = f"{pr['name']} (place {i + 1} of up to {len(prospects)})"
+            say(len(leads), max_results, step)
+            if lookup_sites and not pr["website"]:
+                say(len(leads), max_results, f"Finding website: {step}")
+                pr["website"] = find_website(client, pr["name"], pr["city"],
+                                             pr["address"], spend=spend)
+                if pr["website"]:
+                    pr["website_source"] = "Web search"
+                    # The found site may be one already crawled this run; the
+                    # pre-crawl merge couldn't see that without the website.
+                    if any(_same_prospect(pr, done) for done in processed):
+                        continue
             renderer.budget = config.JS_RENDER_MAX_PAGES  # per-site render budget
 
             try:
@@ -2118,6 +2018,7 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
                 site = {"text": "", "email": "", "emails": [], "phone": "",
                         "socials": [], "pages": 0, "rendered": 0,
                         "printer_models": [], "hosts": []}
+            checked += 1
             processed.append(dict(pr, email=site["email"]))
             processed.extend({"name": rel, "website": pr["website"]}
                              for rel in pr.get("related") or [])
@@ -2200,26 +2101,12 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
                     # nothing, every time, at full price.
                     want.append("printer_models")
                 if want:
-                    say(i + 1, len(prospects), f"Searching for missing details: {pr['name']}")
-                    found = {}
-                    # Free path first: Brave finds the pages, our crawler
-                    # reads them, deterministic extractors pull the values.
-                    if config.PREFER_BRAVE_SEARCH and config.key("BRAVE_API_KEY"):
-                        try:
-                            found = enrich_gaps_free(pr["name"], pr["city"],
-                                                     pr["website"], want,
-                                                     spend=spend)
-                        except Exception:
-                            found = {}
-                    # The LLM web search is the expensive path; only used when
-                    # explicitly enabled, or when Brave isn't configured.
-                    if not found and (config.GAP_SEARCH_LLM_FALLBACK
-                                      or not config.key("BRAVE_API_KEY")):
-                        try:
-                            found = enrich_gaps(client, pr["name"], pr["city"],
-                                                pr["website"], want, spend=spend)
-                        except Exception:
-                            found = {}
+                    say(len(leads), max_results, f"Searching for missing details: {step}")
+                    try:
+                        found = enrich_gaps(client, pr["name"], pr["city"],
+                                            pr["website"], want, spend=spend)
+                    except Exception:
+                        found = {}
                     if found:
                         if found.get("email"):
                             lead["email"] = found["email"]
@@ -2234,23 +2121,25 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
                         lead["enrich_source"] = found.get("source", "")
 
             lead["priority"] = derive_priority(lead)
+
+            # Decide here, not after the loop, whether this lead counts toward
+            # max_results — the loop stops once enough keepers are in.
+            if exclude and any(_same_lead(lead, old) for old in exclude):
+                seen_before[0] += 1      # the crawl revealed an earlier find
+                continue
+            if config.DROP_EMPTY_LEADS and is_empty_lead(lead):
+                late_dropped += 1
+                continue
+            twin = (next((L for L in leads if _same_lead(L, lead)), None)
+                    if config.MERGE_SAME_WEBSITE else None)
+            if twin is not None:
+                _fold_lead(twin, lead)   # same org: no new slot used
+                continue
             leads.append(lead)
     finally:
         renderer.close()
 
-    if config.MERGE_SAME_WEBSITE:
-        leads = dedupe_leads(leads)
-    if exclude:
-        fresh = [L for L in leads
-                 if not any(_same_lead(L, old) for old in exclude)]
-        seen_before[0] += len(leads) - len(fresh)
-        leads = fresh
-
-    dropped = early_dropped
-    if config.DROP_EMPTY_LEADS:
-        kept = [L for L in leads if not is_empty_lead(L)]
-        dropped += len(leads) - len(kept)
-        leads = kept
+    dropped = early_dropped + late_dropped
 
     # Attach the run's cost so callers can show it rather than discover it on
     # a bill. A plain list cannot carry attributes, so return a list subclass
@@ -2262,8 +2151,11 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
     # Everything this run paid to look at, kept or dropped, so the next run
     # skips it too: a lead dropped for "no printers" would be dropped again.
     leads.processed = processed
-    say(len(prospects), len(prospects),
-        f"Done — estimated cost ${spend.total():.2f} for {len(leads)} leads"
+    leads.checked = checked
+    short = (f" — only {len(leads)} of {max_results} wanted after checking "
+             f"{checked} places" if len(leads) < max_results else "")
+    say(len(leads), max_results,
+        f"Done — estimated cost ${spend.total():.2f} for {len(leads)} leads{short}"
         + (f" ({dropped} dropped: no printers or equipment found)" if dropped else "")
         + (f" ({seen_before[0]} skipped: found in earlier runs)" if seen_before[0] else ""))
     print(spend.report(len(leads)))

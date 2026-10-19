@@ -91,10 +91,7 @@
           <label for="google_key">Google Places API key</label>
           <input id="google_key" name="google_key" type="password" autocomplete="off" spellcheck="false">
           <label for="anthropic_key">Anthropic API key</label>
-          <input id="anthropic_key" name="anthropic_key" type="password" autocomplete="off" spellcheck="false">
-          <label for="brave_key">Brave Search API key <span class="opt">(optional, cuts cost)</span></label>
-          <input id="brave_key" name="brave_key" type="password" autocomplete="off" spellcheck="false">
-          <label class="check"><input id="remember" type="checkbox"> Remember keys in this browser</label>
+          <input id="anthropic_key" name="anthropic_key" type="password" autocomplete="off" spellcheck="false">          <label class="check"><input id="remember" type="checkbox"> Remember keys in this browser</label>
           <p class="note">Keys are used for your search only and are never stored on the server.</p>
         </details>
 
@@ -115,7 +112,7 @@
     function show(cls, html) { status.className = cls; status.innerHTML = html; }
 
     // Opt-in only: keys stay in this browser's storage, never on the server.
-    const KEY_FIELDS = ['google_key', 'anthropic_key', 'brave_key'],
+    const KEY_FIELDS = ['google_key', 'anthropic_key'],
           remember = document.getElementById('remember');
     try {
       const saved = JSON.parse(localStorage.getItem('gg3d_keys') || 'null');

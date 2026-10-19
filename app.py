@@ -51,8 +51,7 @@ def _resolve_keys(form):
     server_ok = not config.HOSTED or bool(password)
     keys = {}
     for name, field in (("GOOGLE_PLACES_API_KEY", "google_key"),
-                        ("ANTHROPIC_API_KEY", "anthropic_key"),
-                        ("BRAVE_API_KEY", "brave_key")):
+                        ("ANTHROPIC_API_KEY", "anthropic_key")):
         keys[name] = ((form.get(field) or "").strip()
                       or (getattr(config, name) if server_ok else ""))
     return keys, None

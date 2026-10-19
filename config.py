@@ -18,12 +18,6 @@ _load_env()
 
 GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-# Brave Search. Optional, but it replaces the most expensive step in the
-# pipeline: Claude's server-side web search pulled ~47k tokens of page content
-# into context per call (81% of a measured run). With Brave we get the result
-# URLs, fetch the few that matter with the crawler we already have, and read
-# them with the deterministic extractors — usually with no model call at all.
-BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "")
 
 # --- Per-run key overrides (hosted / bring-your-own-key mode) ----------------
 # A hosted copy serves several people at once, each with their own keys, so
@@ -34,7 +28,7 @@ import threading
 from contextlib import contextmanager
 
 _run_keys = threading.local()
-KEY_NAMES = ("GOOGLE_PLACES_API_KEY", "ANTHROPIC_API_KEY", "BRAVE_API_KEY")
+KEY_NAMES = ("GOOGLE_PLACES_API_KEY", "ANTHROPIC_API_KEY")
 
 
 def key(name):
@@ -116,19 +110,6 @@ MODEL_PRICES = {                     # USD per million tokens (input, output)
 PLACES_COST_PER_REQUEST = 0.04
 # Anthropic server-side web search, per search performed.
 WEB_SEARCH_COST_PER_USE = 0.01
-# Brave Search: free tier allows 2,000 queries/month at 1 query/second.
-# Set to your plan's rate if you are on a paid tier.
-BRAVE_COST_PER_QUERY = 0.0
-BRAVE_MIN_INTERVAL = 1.1     # seconds between queries (free tier is 1 QPS)
-BRAVE_MAX_PAGES = 3          # result pages fetched and read per gap fill
-
-# When Brave is configured, gap filling searches with Brave and reads the
-# pages itself. Set False to force the (far more expensive) Claude web-search
-# path even when a Brave key is present.
-PREFER_BRAVE_SEARCH = True
-# If the free path finds nothing, optionally fall back to Claude's web search.
-# Off by default: that fallback is what made runs expensive.
-GAP_SEARCH_LLM_FALLBACK = False
 
 # Default business type searched around the chosen location. Editable in the UI.
 DEFAULT_TARGET = "makerspace"
@@ -204,6 +185,12 @@ ENABLE_GAP_SEARCH = True
 # is included; remove it to be more conservative.
 DROP_EMPTY_LEADS = True
 DROP_PRIORITIES = ("LOW", "MEDIUM")
+
+# "Max results" counts leads KEPT. Dropped and duplicate places don't use a
+# slot, so the run keeps checking more places until it has enough keepers,
+# but never checks more than this many times the cap. That bounds the cost:
+# with 5 requested, at most 10 places are crawled.
+LOOK_FACTOR = 2
 # Also skip the Claude extraction and gap search for a readable site whose crawl
 # found no PRIORITY_SLUGS page and no mention of 3D printing at all. Saves cost;
 # the lead is counted as dropped. Requires DROP_EMPTY_LEADS.

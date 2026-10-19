@@ -8,6 +8,7 @@ email/phone selection, extension-space dedupe, priority rules, people
 formatting, and the Excel output. No API keys or network needed.
 """
 import io
+import re
 import sys
 import threading
 
@@ -596,77 +597,50 @@ check("having an email means no phone-only search",
                "contacts": [{"name": "X"}], "type": "x", "name": "x",
                "printer_models": ""}) == [])
 
-print("\n[5m] Brave-backed gap fill (free path, no LLM)")
-check("no key -> free path returns nothing rather than erroring",
-      scraper.enrich_gaps_free("X", "Y", "", ["email"]) == {}
-      if not config.BRAVE_API_KEY else True)
-
-# A search result must actually be about this organization before we take a
-# contact off it — otherwise a directory page donates someone else's number.
-check("page naming the org is accepted",
-      scraper._mentions_org("Welcome to Knox Makers, a Knoxville makerspace",
-                            "Knox Makers", "knoxmakers.org"))
-check("unrelated page is rejected",
-      not scraper._mentions_org("Nashville Auto Parts and Service centre",
-                                "Knox Makers", "knoxmakers.org"))
-check("host match alone is enough",
-      scraper._mentions_org("some page text", "Knox Makers", "knoxmakers.org")
-      is False or True)   # host token appears in text check; both paths safe
-
-_saved_brave = config.BRAVE_API_KEY
-_saved_pref = config.PREFER_BRAVE_SEARCH
-_saved_fetch = scraper._fetch
-_saved_bs = scraper.brave_search
+print("\n[5m] Gap fill goes through Claude's web search (Brave removed)")
+check("no Brave code remains in the scraper",
+      not any(hasattr(scraper, n) for n in ("brave_search", "enrich_gaps_free")))
+_saved = {n: getattr(scraper, n) for n in
+          ("places_search_all", "discover_via_search", "find_website",
+           "crawl_site", "extract_and_pitch", "enrich_gaps", "Renderer")}
+_saved_keys = (config.GOOGLE_PLACES_API_KEY, config.ANTHROPIC_API_KEY)
+_gap_calls = []
 try:
-    config.BRAVE_API_KEY = "test-key"
-    scraper.brave_search = lambda q, count=5, spend=None: [
-        ("Knox Makers", "https://directory.example.org/knox-makers", ""),
-    ]
-    scraper._fetch = lambda url, **k: (
-        '<html><body><p>Knox Makers of Knoxville. Phone: (865) 385-2773. '
-        'Email <a href="mailto:board@knoxmakers.org">board@knoxmakers.org</a>. '
-        'We run a Prusa MK4.</p></body></html>',
-        "Knox Makers of Knoxville. Phone: (865) 385-2773. "
-        "Email board@knoxmakers.org. We run a Prusa MK4.")
-    got = scraper.enrich_gaps_free("Knox Makers", "Knoxville",
-                                   "https://knoxmakers.org",
-                                   ["email", "phone", "printer_models"])
-    check("email pulled from a third-party page", got.get("email") == "board@knoxmakers.org", str(got))
-    check("phone pulled deterministically", "385-2773" in (got.get("phone") or ""), str(got))
-    check("printer model pulled deterministically",
-          "MK4" in (got.get("printer_models") or "").upper(), str(got))
-    check("source URL recorded for auditing", "directory.example.org" in got.get("source", ""))
+    config.GOOGLE_PLACES_API_KEY = config.ANTHROPIC_API_KEY = "test-key"
+    scraper.places_search_all = lambda *a, **k: [
+        {"id": "g1", "displayName": {"text": "Quiet Fab Lab"},
+         "formattedAddress": "9 Pine St, Knoxville, TN", "websiteUri": "https://quietfab.org"}]
+    scraper.discover_via_search = lambda *a, **k: []
+    scraper.find_website = lambda *a, **k: ""
+    scraper.crawl_site = lambda *a, **k: {
+        "text": "Our fab lab runs a Prusa MK4.", "email": "", "emails": [], "phone": "",
+        "socials": [], "pages": 2, "rendered": 0, "printer_models": ["Prusa MK4"],
+        "hosts": [], "priority_pages": ["x/lab"]}
+    scraper.extract_and_pitch = lambda *a, **k: {
+        "people": [], "equipment_highlights": "3D printers", "printer_models": "",
+        "pitch": "p"}
 
-    # Real failure: a page ABOUT Knox Makers on the Tennessee Arts Commission
-    # site donated the Commission's own Nashville number as the lead's phone.
-    ARTS = ("Tennessee Arts Commission. Call us at (615) 741-1701. "
-            + "filler " * 80
-            + "Knox Makers is a Knoxville makerspace with a laser cutter.")
-    check("a third party's footer number is NOT taken",
-          scraper._phone_near_mention(ARTS, "Knox Makers") == "",
-          scraper._phone_near_mention(ARTS, "Knox Makers"))
-    NEAR = "Knox Makers can be reached at (865) 385-2773 during open hours."
-    check("a number printed beside the org name IS taken",
-          scraper._phone_near_mention(NEAR, "Knox Makers") == "(865) 385-2773",
-          scraper._phone_near_mention(NEAR, "Knox Makers"))
-    check("no org mention means no phone",
-          scraper._phone_near_mention("Call (615) 741-1701 today", "Knox Makers") == "")
-
-    # An address on the page-owner's domain must not be taken as the lead's.
-    scraper._fetch = lambda url, **k: (
-        '<html><body>Knox Makers listing. Contact '
-        '<a href="mailto:ads@directory.example.org">ads@directory.example.org</a>'
-        '</body></html>',
-        "Knox Makers listing. Contact ads@directory.example.org")
-    got2 = scraper.enrich_gaps_free("Knox Makers", "Knoxville",
-                                    "https://knoxmakers.org", ["email"])
-    check("directory's own address is NOT taken as the lead's",
-          "email" not in got2, str(got2))
+    def _fake_gap(client, name, city, website, want, spend=None):
+        _gap_calls.append(want)
+        return {"email": "hello@quietfab.org", "source": "https://directory.example.org"}
+    scraper.enrich_gaps = _fake_gap
+    scraper.Renderer = lambda **k: type(
+        "R", (), {"budget": 0, "html": lambda s, u: "", "close": lambda s: None})()
+    config.MOCK_MODE = False
+    got = scraper.collect("Knoxville, TN", "makerspace", max_results=1, depth="deep")
+    check("Deep searches for a missing email", _gap_calls and "email" in _gap_calls[0],
+          str(_gap_calls))
+    check("found email reaches the lead, marked as enriched",
+          got and got[0]["email"] == "hello@quietfab.org" and "email" in got[0]["enriched"],
+          str([(L["email"], L["enriched"]) for L in got]))
+    _gap_calls.clear()
+    scraper.collect("Knoxville, TN", "makerspace", max_results=1, depth="standard")
+    check("Standard never runs the paid gap search", _gap_calls == [], str(_gap_calls))
 finally:
-    config.BRAVE_API_KEY = _saved_brave
-    config.PREFER_BRAVE_SEARCH = _saved_pref
-    scraper._fetch = _saved_fetch
-    scraper.brave_search = _saved_bs
+    for n, v in _saved.items():
+        setattr(scraper, n, v)
+    config.GOOGLE_PLACES_API_KEY, config.ANTHROPIC_API_KEY = _saved_keys
+    config.MOCK_MODE = False
 
 print("\n[6] Priority rules")
 check("printers + reachable + contact + reviews = HIGH",
@@ -970,6 +944,64 @@ try:
     got = scraper.collect("Knoxville, TN", "makerspace", max_results=20, depth="deep")
     check("web discovery still contributes places",
           any("Campus Lab" in L["name"] for L in got), str([L["name"] for L in got]))
+
+    print("\n[8d] Max results counts KEEPERS; never checks more than 2x the cap")
+    check("look limit is 2x", config.LOOK_FACTOR == 2, str(config.LOOK_FACTOR))
+    _crawled.clear()
+
+    def _crawl_half(website, *a, **k):
+        n = int(re.sub(r"\D", "", website) or 0)
+        if n % 2:      # odd shops: readable, nothing about 3D printing -> dropped
+            _crawled.append(website)
+            return {"text": "We sell pottery and tea.", "email": "", "emails": [],
+                    "phone": "", "socials": [], "pages": 2, "rendered": 0,
+                    "printer_models": [], "hosts": [], "priority_pages": []}
+        return _fake_crawl2(website)      # records the crawl itself
+    scraper.crawl_site = _crawl_half
+    scraper.discover_via_search = lambda *a, **k: []
+    got = scraper.collect("Knoxville, TN", "makerspace", max_results=5, depth="standard")
+    check("drops don't use a slot: 5 keepers despite half being dropped",
+          len(got) == 5, f"{len(got)} leads, crawled {len(_crawled)}")
+    check("stops as soon as the cap is met (not the whole pool)",
+          len(_crawled) <= 10, str(len(_crawled)))
+    check("dropped count reported", got.dropped >= 4, str(got.dropped))
+
+    _crawled.clear()
+    scraper.crawl_site = lambda website, *a, **k: (_crawled.append(website) or {
+        "text": "Pottery only.", "email": "", "emails": [], "phone": "", "socials": [],
+        "pages": 2, "rendered": 0, "printer_models": [], "hosts": [], "priority_pages": []})
+    got = scraper.collect("Knoxville, TN", "makerspace", max_results=5, depth="standard")
+    check("no keepers anywhere: stops at 2x the cap, never beyond",
+          len(got) == 0 and len(_crawled) == 10, f"{len(got)} leads, crawled {len(_crawled)}")
+    check("a short run says how many places it checked", got.checked == 10, str(got.checked))
+
+    # Website lookups cost a search each, so only places actually reached pay.
+    _lookups = []
+    scraper.places_search_all = lambda *a, max_results=20, **k: [
+        {"id": f"n{i}", "displayName": {"text": f"Siteless Lab {i}"},
+         "formattedAddress": f"{i} Oak St, Knoxville, TN"} for i in range(max_results)]
+    scraper.find_website = lambda client, name, *a, **k: (
+        _lookups.append(name) or "https://" + name.split()[-1] + "lab.org")
+    scraper.crawl_site = _fake_crawl2
+    got = scraper.collect("Knoxville, TN", "makerspace", max_results=3, depth="standard")
+    check("website lookup only for places the run reached",
+          len(got) == 3 and len(_lookups) == 3, f"{len(got)} leads, {len(_lookups)} lookups")
+
+    _a = {"name": "Maker Hub", "email": "", "phone_web": "", "printer_models": "",
+          "equipment_highlights": "", "contacts": [{"name": "X"}], "address": "1 Main St"}
+    _b = {"name": "Maker Hub Knoxville", "email": "hi@makerhub.com", "phone_web": "(865) 555-0101",
+          "printer_models": "Prusa MK4", "equipment_highlights": "3D printers", "contacts": [],
+          "address": "1 Main St"}
+    scraper._fold_lead(_a, _b)
+    check("a merged duplicate's phone/printers/equipment fill the kept row's blanks",
+          (_a["phone_web"], _a["printer_models"], _a["equipment_highlights"], _a["email"])
+          == ("(865) 555-0101", "Prusa MK4", "3D printers", "hi@makerhub.com"), str(_a))
+    check("the kept row's own data is never overwritten", _a["contacts"] == [{"name": "X"}])
+    check("web finds are mixed in, not queued behind every Maps result",
+          [p["n"] for p in scraper._interleave_sources(
+              [{"n": i, "discovered_via": "Google Places"} for i in range(6)]
+              + [{"n": "w1", "discovered_via": "Web search"}, {"n": "w2", "discovered_via": "Web search"}])]
+          == [0, 1, 2, "w1", 3, 4, 5, "w2"])
 
     history.clear(ns)
     check("clearing history forgets earlier runs", history.load(ns) == [])

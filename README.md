@@ -205,19 +205,11 @@ Every run prints a breakdown when it finishes — Places requests, each type of
 Claude call, tokens in/out, and a total with a per-lead figure. Read that
 instead of guessing; the numbers move with depth and location.
 
-**Add a Brave Search key.** It is the single biggest saving. Without one,
-filling missing contacts uses Claude's server-side web search, which pulls
-whole pages into the model's context — measured at ~47k input tokens per call
-and **81% of a run's cost**. With a Brave key the app searches with Brave,
-fetches the two or three relevant pages with the crawler it already has, and
-reads them with the deterministic extractors (the same regexes that find
-emails, phones, and printer models on a company's own site). That path uses
-**no model call at all**. Brave's free tier is 2,000 queries/month.
-
-Values taken off a third-party page are validated first: the page must
-actually name the organization, and an email is only accepted if it sits on
-the company's own domain — otherwise a directory listing would donate its own
-sales address as the lead's contact.
+**The biggest cost is the gap search on Deep.** Filling missing contacts uses
+Claude's server-side web search, which pulls whole pages into the model's
+context — measured at ~47k input tokens per call and **81% of a run's cost**.
+It runs only on Deep, and only for leads still missing an email, phone, or
+printer models. Use Standard to skip it entirely.
 
 Where the money goes, and the levers:
 
@@ -242,6 +234,11 @@ location for a few cents. Reserve Deep for locations you intend to work.
 
 - Google Places (New) text search and each extraction/pitch (one Claude call per
   company) both cost money per run. Keep "Max results" modest while testing.
+- "Max results" is the number of leads you get in the spreadsheet. Places
+  dropped for showing no 3D printing, or merged as duplicates, don't count, so
+  the run keeps checking more places until it has enough — but never more
+  than 2x the number (`LOOK_FACTOR` in `config.py`). With 5 requested, at most
+  10 places are crawled; a run that falls short says how many it checked.
 - The tool only reads public data (Places listings + public company websites). It
   does **not** scrape Google Maps directly or LinkedIn.
 
@@ -250,13 +247,13 @@ location for a few cents. Reserve Deep for locations you intend to work.
 1. Push this folder to a GitHub repo (`.env` is git-ignored, so keep it that way).
 2. On render.com: **New > Blueprint**, pick the repo. `render.yaml` sets up a
    free web service running `gunicorn` with one worker.
-3. Open the URL. Each visitor enters their own Google Places / Anthropic /
-   (optional) Brave keys in the **API keys** box. Keys are used for that run
+3. Open the URL. Each visitor enters their own Google Places and Anthropic
+   keys in the **API keys** box. Keys are used for that run
    only and never stored on the server; "Remember keys" keeps them in that
    visitor's browser.
 
-Optional shared keys: set `GOOGLE_PLACES_API_KEY`, `ANTHROPIC_API_KEY`,
-`BRAVE_API_KEY` and `APP_PASSWORD` in the Render dashboard. With `HOSTED=1`
+Optional shared keys: set `GOOGLE_PLACES_API_KEY`, `ANTHROPIC_API_KEY` and
+`APP_PASSWORD` in the Render dashboard. With `HOSTED=1`
 (set by the blueprint) those keys are used only when the visitor enters the
 password, so a stranger who finds the URL can't spend them.
 
