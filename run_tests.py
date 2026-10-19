@@ -943,6 +943,34 @@ try:
     check("uploaded spreadsheet alone excludes its places",
           [L["name"] for L in run3] == ["Brand New Lab"], str([L["name"] for L in run3]))
 
+    print("\n[8c] Max results caps the TOTAL, web discovery included")
+    _many = [{"id": f"m{i}", "displayName": {"text": f"Shop Number {i}"},
+              "formattedAddress": f"{i} Main St, Knoxville, TN",
+              "websiteUri": f"https://shop{i}.com"} for i in range(20)]
+    _asked = {}
+
+    def _places_many(target, location, max_results=20, skip=None, **k):
+        _asked["places"] = max_results
+        return _many[:max_results]
+
+    def _discover_many(*a, limit=20, **k):
+        _asked["discovery"] = limit
+        return [{"name": f"Campus Lab {i}", "website": f"https://lab{i}.edu",
+                 "city": "Knoxville", "address": "", "kind": "Lab"} for i in range(8)]
+
+    scraper.places_search_all = _places_many
+    scraper.discover_via_search = _discover_many
+    for cap in (5, 1, 20):
+        _asked.clear()
+        got = scraper.collect("Knoxville, TN", "makerspace", max_results=cap, depth="deep")
+        check(f"cap {cap}: never more than {cap} leads", len(got) <= cap, f"{len(got)} leads")
+        check(f"cap {cap}: exactly {cap} when both sources have plenty", len(got) == cap,
+              f"{len(got)} leads, asked {_asked}")
+    _asked.clear()
+    got = scraper.collect("Knoxville, TN", "makerspace", max_results=20, depth="deep")
+    check("web discovery still contributes places",
+          any("Campus Lab" in L["name"] for L in got), str([L["name"] for L in got]))
+
     history.clear(ns)
     check("clearing history forgets earlier runs", history.load(ns) == [])
     check("visitors with different keys get separate histories",

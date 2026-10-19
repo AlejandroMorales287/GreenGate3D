@@ -1987,7 +1987,12 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
                       "address": p.get("formattedAddress", ""),
                       "phone_maps": p.get("nationalPhoneNumber", "")})
 
-    raw = places_search_all(target, location, max_results=max_results,
+    # max_results is the TOTAL across both sources. Web discovery used to add
+    # up to 8 places on top of a full Places quota, so "5" could return 13.
+    # Reserve about a quarter of the slots for it (it finds what Maps can't);
+    # if Places comes back short, discovery may fill the remainder.
+    reserve = max_results // 4 if use_discovery else 0
+    raw = places_search_all(target, location, max_results=max_results - reserve,
                             max_queries=preset["queries"], progress=say,
                             spend=spend, skip=_seen_place if exclude else None)
     prospects = []
@@ -2014,14 +2019,16 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
         })
 
     # --- Source 2: web search, for places with no Maps listing --------------
-    if use_discovery:
+    slots = max_results - len(prospects)
+    if use_discovery and slots > 0:
         say(0, 0, "Searching the web for places not on Maps…")
         try:
+            # Ask for a few spare: some answers duplicate Places results.
             extra = discover_via_search(
                 client, location, target,
                 known_names=[p["name"] for p in prospects]
                             + [e["name"] for e in exclude],
-                limit=max(8, max_results // 2), spend=spend)
+                limit=slots + 3, spend=spend)
         except Exception as e:
             extra = []
             # Don't fail the run, but don't hide it either: a silent empty
@@ -2056,6 +2063,8 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
             return False
 
         for e in extra:
+            if len(prospects) >= max_results:
+                break
             host = _host(e["website"])
             if (host and host in known_hosts) or _same_org(e["name"]):
                 continue
@@ -2089,7 +2098,7 @@ def collect(location, target, max_results=20, progress=None, depth="deep",
             pr["website_source"] = "Web search"
 
     # --- Merge duplicates before spending crawl/AI calls --------------------
-    prospects = merge_prospects(prospects)
+    prospects = merge_prospects(prospects)[:max_results]
 
     # --- Crawl + extract ----------------------------------------------------
     renderer = Renderer(enabled=use_render)
