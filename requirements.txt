@@ -1,0 +1,11 @@
+flask
+requests
+beautifulsoup4
+openpyxl
+anthropic
+# Renders JavaScript-only sites (Framer/Wix/React) that serve an empty HTML
+# shell. After installing, run once:  playwright install chromium
+# Optional: set ENABLE_JS_RENDER = False in config.py to skip it.
+playwright
+# Production server for hosted deploys (Linux only; locally use python app.py).
+gunicorn; sys_platform != "win32"

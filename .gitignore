@@ -1,0 +1,14 @@
+# Secrets — never commit. Use .env.example as the template.
+.env
+
+# Generated spreadsheets
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Cross-run history of places already found
+data/

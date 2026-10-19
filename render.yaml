@@ -1,0 +1,25 @@
+# Render.com blueprint: New > Blueprint, point it at this repo.
+# Free plan: sleeps after 15 min with no traffic (the open page's progress
+# polling keeps it awake during a run). Jobs live in memory, so ONE worker.
+services:
+  - type: web
+    name: greengate3d-leads
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 0 --bind 0.0.0.0:$PORT
+    envVars:
+      - key: HOSTED
+        value: "1"
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      # Optional: shared keys, usable only with APP_PASSWORD. Set the values
+      # in the Render dashboard, never in this file.
+      - key: APP_PASSWORD
+        sync: false
+      - key: GOOGLE_PLACES_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: BRAVE_API_KEY
+        sync: false

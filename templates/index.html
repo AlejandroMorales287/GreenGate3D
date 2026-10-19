@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GreenGate3D Lead Finder</title>
+  <style>
+    :root { --green:#2E7D32; --green-d:#1b5e20; --bg:#f5f7f5; --ink:#1c2b1c; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:Arial, sans-serif; background:var(--bg); color:var(--ink); }
+    .wrap { max-width:520px; margin:6vh auto; padding:0 20px; }
+    .card { background:#fff; border-radius:14px; padding:28px 26px;
+            box-shadow:0 6px 24px rgba(0,0,0,.08); }
+    h1 { margin:0 0 4px; font-size:22px; color:var(--green-d); }
+    p.sub { margin:0 0 22px; color:#5a6b5a; font-size:14px; }
+    label { display:block; font-weight:bold; font-size:13px; margin:16px 0 6px; }
+    input, select { width:100%; padding:11px 12px; border:1px solid #cdd6cd;
+            border-radius:8px; font-size:15px; font-family:inherit;
+            background:#fff; color:inherit; }
+    input:focus, select:focus { outline:2px solid var(--green); border-color:var(--green); }
+    .row { display:flex; gap:12px; }
+    .row > div { flex:1; }
+    button { margin-top:22px; width:100%; padding:13px; border:0; border-radius:8px;
+             background:var(--green); color:#fff; font-size:16px; font-weight:bold;
+             cursor:pointer; }
+    button:hover { background:var(--green-d); }
+    button:disabled { background:#9bbf9c; cursor:not-allowed; }
+    .note { margin-top:16px; font-size:12px; color:#6a7a6a; line-height:1.5; }
+    .banner { padding:10px 12px; border-radius:8px; font-size:13px; margin-bottom:18px; }
+    .warn { background:#fff4e5; color:#8a5a00; border:1px solid #ffd9a0; }
+    #status { margin-top:16px; font-size:14px; min-height:20px; }
+    .err { color:#b00020; } .ok { color:var(--green-d); }
+    .spin { display:inline-block; width:14px; height:14px; border:2px solid #cdd6cd;
+            border-top-color:var(--green); border-radius:50%; animation:s .8s linear infinite;
+            vertical-align:-2px; margin-right:6px; }
+    @keyframes s { to { transform:rotate(360deg); } }
+    details.keys { margin-top:18px; border:1px solid #e1e8e1; border-radius:8px; padding:10px 12px; }
+    details.keys summary { cursor:pointer; font-weight:bold; font-size:13px; }
+    .opt { font-weight:normal; color:#6a7a6a; }
+    label.check { display:flex; align-items:center; gap:8px; font-weight:normal; }
+    label.check input { width:auto; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>GreenGate3D Lead Finder</h1>
+      <p class="sub">Pick a location. Get a verified-facts spreadsheet of prospects.</p>
+
+      {% if mock %}
+        <div class="banner warn"><b>MOCK MODE</b> — returning sample data, no live API calls.</div>
+      {% elif not has_keys and not hosted %}
+        <div class="banner warn"><b>No API keys detected.</b> Add them to <code>.env</code> or enter them below.</div>
+      {% endif %}
+
+      <form id="f">
+        <label for="location">Location</label>
+        <input id="location" name="location" placeholder="e.g. Knoxville, TN" required>
+        <div class="row">
+          <div>
+            <label for="target">Business type</label>
+            <input id="target" name="target" value="{{ default_target }}">
+          </div>
+          <div>
+            <label for="max_results">Max results</label>
+            <input id="max_results" name="max_results" type="number" min="1" max="60" value="20">
+          </div>
+        </div>
+        <label for="depth">Search depth</label>
+        <select id="depth" name="depth">
+          <option value="deep" selected>Deep — most contacts found, slowest</option>
+          <option value="standard">Standard — balanced</option>
+          <option value="quick">Quick — Google Maps only, few pages per site</option>
+        </select>
+
+        <label class="check"><input id="skip_seen" type="checkbox" checked>
+          Skip places found in earlier runs</label>
+        <label for="previous">Earlier spreadsheets to skip <span class="opt">(optional)</span></label>
+        <input id="previous" name="previous" type="file" accept=".xlsx" multiple>
+        <p class="note">Every run is remembered automatically{% if hosted %} until the
+          server restarts — upload past files to be sure{% endif %}.
+          <a href="#" id="clear">Forget earlier runs</a></p>
+
+        <details class="keys" {% if hosted and not mock %}open{% endif %}>
+          <summary>API keys{% if not hosted %} (optional — overrides <code>.env</code>){% endif %}</summary>
+          {% if password_enabled %}
+            <label for="password">Access password</label>
+            <input id="password" name="password" type="password" autocomplete="current-password"
+                   placeholder="Use the shared keys instead of your own">
+          {% endif %}
+          <label for="google_key">Google Places API key</label>
+          <input id="google_key" name="google_key" type="password" autocomplete="off" spellcheck="false">
+          <label for="anthropic_key">Anthropic API key</label>
+          <input id="anthropic_key" name="anthropic_key" type="password" autocomplete="off" spellcheck="false">
+          <label for="brave_key">Brave Search API key <span class="opt">(optional, cuts cost)</span></label>
+          <input id="brave_key" name="brave_key" type="password" autocomplete="off" spellcheck="false">
+          <label class="check"><input id="remember" type="checkbox"> Remember keys in this browser</label>
+          <p class="note">Keys are used for your search only and are never stored on the server.</p>
+        </details>
+
+        <button id="go" type="submit">Generate spreadsheet</button>
+      </form>
+
+      <div id="status"></div>
+      <p class="note">Contact facts come from Google Places + each company's own website.
+        Columns that can't be verified automatically are left blank — nothing is invented.
+        Larger searches take longer (one AI pitch is written per company).</p>
+    </div>
+  </div>
+
+  <script>
+    const f = document.getElementById('f'), go = document.getElementById('go'),
+          status = document.getElementById('status');
+
+    function show(cls, html) { status.className = cls; status.innerHTML = html; }
+
+    // Opt-in only: keys stay in this browser's storage, never on the server.
+    const KEY_FIELDS = ['google_key', 'anthropic_key', 'brave_key'],
+          remember = document.getElementById('remember');
+    try {
+      const saved = JSON.parse(localStorage.getItem('gg3d_keys') || 'null');
+      if (saved) {
+        remember.checked = true;
+        KEY_FIELDS.forEach(k => { document.getElementById(k).value = saved[k] || ''; });
+      }
+    } catch (e) {}
+    function saveKeys() {
+      try {
+        if (remember.checked) {
+          const o = {};
+          KEY_FIELDS.forEach(k => { o[k] = document.getElementById(k).value; });
+          localStorage.setItem('gg3d_keys', JSON.stringify(o));
+        } else { localStorage.removeItem('gg3d_keys'); }
+      } catch (e) {}
+    }
+    remember.addEventListener('change', saveKeys);
+
+    document.getElementById('clear').addEventListener('click', async (e) => {
+      e.preventDefault();
+      if (!confirm('Forget all earlier runs? Their places can then be found again.')) return;
+      const fd = new FormData(f);
+      fd.delete('previous');
+      const resp = await fetch('/history/clear', { method: 'POST', body: fd });
+      const j = await resp.json().catch(() => ({}));
+      show(resp.ok ? 'ok' : 'err', resp.ok ? '✓ Earlier runs forgotten' : '⚠ ' + (j.error || resp.statusText));
+    });
+
+    async function poll(jobId) {
+      while (true) {
+        await new Promise(r => setTimeout(r, 1200));
+        let j;
+        try {
+          const resp = await fetch('/progress/' + jobId);
+          j = await resp.json();
+          if (!resp.ok) throw new Error(j.error || resp.statusText);
+        } catch (err) { show('err', '⚠ ' + err.message); return; }
+
+        if (j.status === 'error') { show('err', '⚠ ' + (j.error || 'Unknown error')); return; }
+        if (j.status === 'done') {
+          const a = document.createElement('a');
+          a.href = '/download/' + jobId;
+          a.download = j.fname || 'leads.xlsx';
+          a.click();
+          show('ok', '✓ Downloaded ' + (j.fname || 'leads.xlsx'));
+          return;
+        }
+        const where = j.total
+          ? `Scraping ${j.done}/${j.total}: ${j.current || '…'}`
+          : 'Searching Google Places…';
+        show('', `<span class="spin"></span>${where}`);
+      }
+    }
+
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      saveKeys();
+      go.disabled = true;
+      show('', '<span class="spin"></span>Starting…');
+      try {
+        const fd = new FormData(f);
+        fd.set('skip_seen', document.getElementById('skip_seen').checked ? '1' : '0');
+        const resp = await fetch('/generate', { method: 'POST', body: fd });
+        const j = await resp.json().catch(() => ({ error: 'Unexpected error' }));
+        if (!resp.ok) { show('err', '⚠ ' + (j.error || resp.statusText)); }
+        else { await poll(j.job_id); }
+      } catch (err) {
+        show('err', '⚠ ' + err.message);
+      } finally { go.disabled = false; }
+    });
+  </script>
+</body>
+</html>
