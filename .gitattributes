@@ -1,0 +1,2 @@
+# Batch files misbehave with Unix line endings; keep them CRLF everywhere.
+*.bat text eol=crlf

@@ -50,7 +50,18 @@ named incidentally — a member who owns a tool, a testimonial, a class post —
 is deliberately excluded, so an empty Other Contacts cell means "the site names no
 staff", not "the crawler missed it".
 
-## Setup (one time)
+## Quick start (Windows, no coding)
+
+1. Install Python 3.12 from https://www.python.org/downloads/ — on the first
+   installer screen, tick **"Add python.exe to PATH"**.
+2. Unzip this folder somewhere with a short path, e.g. `Documents\GreenGate3D`.
+3. Double-click **`start.bat`**. The first run takes a few minutes to set up,
+   then opens a `.env` file in Notepad: paste your API keys (see step 2 below)
+   after the `=` signs, save, and double-click `start.bat` again.
+4. From then on, double-click `start.bat` to run. Keep its window open while
+   you use the app; close it to stop.
+
+## Setup (one time, manual)
 
 1. Install Python packages:
    ```
